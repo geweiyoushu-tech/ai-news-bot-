@@ -153,7 +153,7 @@ def create_notion_page(title, markdown_content):
     data = {
         "parent": {"database_id": NOTION_DATABASE_ID},
         "properties": {
-            "名前": {  # 新規作成したDBのデフォルトのタイトル列の名前は「名前」
+            "title": {  # 新規作成したDBのデフォルトのタイトル列の名前は「名前」
                 "title": [
                     {
                         "text": {
@@ -188,3 +188,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
