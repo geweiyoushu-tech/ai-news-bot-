@@ -56,7 +56,7 @@ def generate_news_article(articles):
     system_instruction = """あなたは、AIスクール「AI+」の受講生向けに、最新のAIニュースを配信する編集アシスタントです。AIに詳しくない受講生の学習意欲を高め、AIを身近に感じてもらうことが目的です。
 専門用語を避け、親しみやすく、丁寧な解説を心がけてください。
 
-【ピックアップ基準】（最優先1件のみ選ぶこと）
+【ピックアップ基準】（最も重要な3件を選ぶこと）
 優先度高: 読者が「明日から使ってみたい！」と思えるニュース
 - 身近なサービスへのAI導入
 - 有名なAIツールの「無料」または「簡単な」新機能
@@ -65,9 +65,12 @@ def generate_news_article(articles):
 優先度中: 社会的な影響が大きい話題など、未来を感じられるニュース
 優先度低(避ける): 専門的すぎる技術論文、過度に扇情的な内容
 
-【出力フォーマット】 (Markdown形式)
-最初の行に { "title": "...", "url": "..." } という形式のJSONを配置し、その次の行から以下のMarkdownを出力してください。
+【出力フォーマット要求】
+1. 必ず、基準に最も合致する異なるニュースを「3件」選んでください。
+2. それぞれのニュースについて、必ず「タイトル(title)」と「参照元URL(url)」と「解説本文のMarkdown(markdown)」を持つJSONオブジェクトを作成してください。
+3. 最終的な出力は、それら3件を含むJSONの配列（リスト）形式のみとしてください。他の挨拶や余計な文字列は一切含めないでください。
 
+【Markdownフォーマット（各記事の markdown プロパティの書式）】
 ## 💡 概要
 （ニュースの要点を2〜3行でまとめる。読者が「自分に関係ありそう」と思えるように書く）
 ---
@@ -86,9 +89,25 @@ def generate_news_article(articles):
 ---
 ## 🔗 リンク
 * **参考記事:** [（元のニュース記事のタイトル）]（（元のニュース記事のURL））
+
+【厳密な出力形式】
+以下のようなJSON配列で出力すること。
+[
+  {
+    "title": "記事1のタイトル",
+    "url": "記事1のURL",
+    "markdown": "記事1のマークダウン本文\\n## 💡 概要\\n..."
+  },
+  {
+    ...記事2...
+  },
+  {
+    ...記事3...
+  }
+]
 """
 
-    prompt = f"以下の今日のニュース/記事リストから、基準に最も合致するものを1つ選び、指定のフォーマットで解説記事を生成してください。\n\n【今日の記事リスト】\n{articles_text}"
+    prompt = f"以下の今日のニュース/記事リストから、基準に最も合致するものを3つ選び、指定のJSON配列形式で出力してください。\n\n【今日の記事リスト】\n{articles_text}"
 
     client = genai.Client(api_key=GEMINI_API_KEY)
     response = client.models.generate_content(
@@ -97,34 +116,27 @@ def generate_news_article(articles):
         config=types.GenerateContentConfig(
             system_instruction=system_instruction,
             temperature=0.7,
+            # 必ずJSONで返すように指定
+            response_mime_type="application/json",
         )
     )
     return response.text
 
 def parse_generated_content(content):
-    lines = content.strip().split('\n')
-    meta_json_str = lines[0]
-    
-    if not meta_json_str.strip().startswith('{'):
-        match = re.search(r'```json\n(.*?)\n```', content, re.DOTALL)
-        if match:
-             meta_json_str = match.group(1)
-             markdown_body = content.replace(f"```json\n{meta_json_str}\n```", "").strip()
-        else:
-             meta_json_str = '{"title": "AI News", "url": ""}'
-             markdown_body = content
-    else:
-        markdown_body = '\n'.join(lines[1:]).strip()
-        
+    """3件分の配列JSONをパースして返す"""
     try:
-        metadata = json.loads(meta_json_str)
-    except json.JSONDecodeError:
-        metadata = {"title": "本日のAIピックアップニュース", "url": ""}
-        
-    return metadata, markdown_body
+        articles_data = json.loads(content)
+        if isinstance(articles_data, list):
+            return articles_data
+        else:
+            logging.warning("出力が配列ではありませんでした。")
+            return []
+    except json.JSONDecodeError as e:
+        logging.error(f"JSONパースエラー: {e}\n出力内容: {content}")
+        return []
 
 def create_notion_page(title, markdown_content):
-    logging.info("Notionへの投稿を開始します...")
+    logging.info(f"Notionへの投稿を開始します: {title}")
     if not NOTION_API_KEY or not NOTION_DATABASE_ID:
         logging.warning("Notion APIまたはDB IDが未設定。投稿スキップ。")
         return False
@@ -148,12 +160,10 @@ def create_notion_page(title, markdown_content):
                 blocks.append({"object": "block", "type": "paragraph", "paragraph": {"rich_text": [{"type": "text", "text": {"content": para[:2000]}}]}})
         return blocks
 
-    # 必須プロパティのみに削り、タイトルプロパティ名を動的に対応するための安全なペイロード
-    # （Notionの初期DBに確実にある title プロパティである「名前」だけを送る）
     data = {
         "parent": {"database_id": NOTION_DATABASE_ID},
         "properties": {
-            "title": {  # 新規作成したDBのデフォルトのタイトル列の名前は「名前」
+            "title": {  
                 "title": [
                     {
                         "text": {
@@ -179,13 +189,26 @@ def main():
         articles = fetch_rss_feeds(RSS_FEEDS)
         if not articles: return
 
+        # 3件分のデータがJSON配列で返ってくる
         raw_output = generate_news_article(articles)
-        metadata, markdown_body = parse_generated_content(raw_output)
-        create_notion_page(metadata.get('title', '無題'), markdown_body)
+        generated_articles = parse_generated_content(raw_output)
+        
+        if not generated_articles:
+            logging.error("記事の生成に失敗しました。")
+            return
+            
+        logging.info(f"{len(generated_articles)}件の記事が生成されました。Notionへ順番に投稿します。")
+        
+        # 3件をそれぞれNotionに投稿するループ
+        for item in generated_articles:
+            title = item.get("title", "無題")
+            markdown_content = item.get("markdown", "")
+            if markdown_content:
+                create_notion_page(title, markdown_content)
+                
     except Exception as e:
         logging.error(f"実行中にエラーが発生しました: {e}")
         raise
 
 if __name__ == "__main__":
     main()
-
