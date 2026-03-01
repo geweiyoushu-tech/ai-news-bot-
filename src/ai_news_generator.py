@@ -25,38 +25,91 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 NOTION_API_KEY = os.environ.get("NOTION_API_KEY")
 NOTION_DATABASE_ID = os.environ.get("NOTION_DATABASE_ID")
 
-def fetch_rss_feeds(urls):
+
+def get_posted_titles_from_notion():
+    """Notionから過去に投稿した記事のタイトル一覧を取得する"""
+    logging.info("Notionから過去の投稿履歴を確認します...")
+    if not NOTION_API_KEY or not NOTION_DATABASE_ID:
+        return set()
+
+    url = f"https://api.notion.com/v1/databases/{NOTION_DATABASE_ID}/query"
+    headers = {
+        "Authorization": f"Bearer {NOTION_API_KEY}",
+        "Content-Type": "application/json",
+        "Notion-Version": "2022-06-28"
+    }
+    
+    # 直近30件を取得して重複を避ける
+    data = {"page_size": 30}
+    posted_titles = set()
+    
+    try:
+        response = requests.post(url, headers=headers, json=data)
+        if response.status_code == 200:
+            results = response.json().get("results", [])
+            for page in results:
+                props = page.get("properties", {})
+                for prop_name, prop_data in props.items():
+                    if prop_data.get("type") == "title":
+                        title_arr = prop_data.get("title", [])
+                        if title_arr:
+                            # プレーンテキストから「【デイリーAIニュース】」を外して純粋なタイトルにする
+                            raw_title = title_arr[0].get("plain_text", "")
+                            clean_title = raw_title.replace("【デイリーAIニュース】", "").strip()
+                            posted_titles.add(clean_title)
+            logging.info(f"Notionから {len(posted_titles)} 件の過去タイトルを取得しました。")
+        else:
+            logging.warning("Notionからの履歴取得に失敗しました。")
+    except Exception as e:
+        logging.error(f"Notionからの履歴取得エラー: {e}")
+        
+    return posted_titles
+
+
+def fetch_rss_feeds(urls, exclude_titles):
     logging.info("RSSフィードからの記事取得を開始します...")
     articles = []
-    # 重複防止のためにURLのセットで管理
     seen_urls = set()
     
     for url in urls:
         try:
             feed = feedparser.parse(url)
-            for entry in feed.entries[:5]:
+            for entry in feed.entries[:5]: # 各サイト上位5件
                 link = entry.link
-                if link not in seen_urls:
+                title = entry.title
+                
+                # 過去にNotionに投稿したタイトルと似ているものは除外する
+                is_excluded = False
+                for ex_title in exclude_titles:
+                    if (title in ex_title) or (ex_title in title):
+                        is_excluded = True
+                        break
+                        
+                if not is_excluded and link not in seen_urls:
                     seen_urls.add(link)
                     articles.append({
-                        "title": entry.title,
+                        "title": title,
                         "link": link,
                         "published": getattr(entry, "published", getattr(entry, "updated", "")),
                         "summary": getattr(entry, "summary", "")[:200]
                     })
         except Exception as e:
             logging.error(f"フィード取得エラー ({url}): {e}")
-    logging.info(f"合計 {len(articles)} 件の重複のない記事を取得しました。")
+            
+    logging.info(f"重複・過去分を除外し、合計 {len(articles)} 件の新しい記事候補を取得しました。")
     return articles
 
 def generate_news_article(articles):
-    logging.info("Gemini APIを使用して記事の選定と生成を開始します...")
+    logging.info("Gemini APIを使用して新しい記事の選定と生成を開始します...")
     if not GEMINI_API_KEY:
-        raise ValueError("GEMINI_API_KEY 環境変数が設定されていません。")
+        raise ValueError("GEMINI_API_KEY Environment variable not set.")
+
+    if not articles:
+        return "[]" # 新しい記事がない場合
 
     articles_text = ""
     for idx, article in enumerate(articles):
-        articles_text += f"[記事番号: {idx+1}]\nタイトル: {article['title']}\nURL: {article['link']}\n概要: {article['summary']}\n\n"
+        articles_text += f"[候補番号: {idx+1}]\nタイトル: {article['title']}\nURL: {article['link']}\n概要: {article['summary']}\n\n"
 
     system_instruction = """あなたは最新のAIニュースを配信する編集アシスタントです。
 AIに詳しくない受講生にAIを身近に感じてもらうため、専門用語を避け、親しみやすい解説を心がけてください。
@@ -97,7 +150,6 @@ AIに詳しくない受講生にAIを身近に感じてもらうため、専門�
 
     client = genai.Client(api_key=GEMINI_API_KEY)
     
-    # JSONの出力プロパティを細かく指定し、途中での書き漏らしをシステム制御で防ぐ
     response_schema = {
         "type": "array",
         "items": {
@@ -128,17 +180,13 @@ def parse_generated_content(content):
         articles_data = json.loads(content)
         if isinstance(articles_data, list):
             return articles_data
-        else:
-            logging.warning("出力が配列ではありませんでした。")
-            return []
+        return []
     except json.JSONDecodeError as e:
-        logging.error(f"JSONパースエラー: {e}\n出力内容: {content}")
+        logging.error(f"JSONパースエラー: {e}")
         return []
 
 def create_notion_page(title, markdown_content):
-    logging.info(f"Notionへの投稿を開始します: {title}")
     if not NOTION_API_KEY or not NOTION_DATABASE_ID:
-        logging.warning("Notion APIまたはDB IDが未設定。投稿スキップ。")
         return False
         
     url = "https://api.notion.com/v1/pages"
@@ -164,13 +212,7 @@ def create_notion_page(title, markdown_content):
         "parent": {"database_id": NOTION_DATABASE_ID},
         "properties": {
             "title": {  
-                "title": [
-                    {
-                        "text": {
-                            "content": f"【デイリーAIニュース】{title}"
-                        }
-                    }
-                ]
+                "title": [{"text": {"content": f"【デイリーAIニュース】{title}"}}]
             }
         },
         "children": create_text_blocks(markdown_content)
@@ -178,26 +220,35 @@ def create_notion_page(title, markdown_content):
 
     response = requests.post(url, headers=headers, json=data)
     if response.status_code == 200:
-        logging.info("Notionへの投稿が成功しました！")
+        logging.info(f"投稿成功: {title[:15]}...")
         return True
     else:
-        logging.error(f"Notion投稿エラー: {response.status_code} - {response.text}")
+        logging.error(f"Notion投稿エラー: {response.status_code}")
         return False
 
 def main():
     try:
-        articles = fetch_rss_feeds(RSS_FEEDS)
-        if not articles: return
+        # 0. Notionから過去に投稿した記事のタイトルを取得（直近30件）
+        posted_titles = get_posted_titles_from_notion()
 
+        # 1. ニュースの収集（過去に投稿したタイトルを除外する！）
+        articles = fetch_rss_feeds(RSS_FEEDS, posted_titles)
+        
+        if not articles:
+            logging.info("新しい記事候補が見つかりませんでした（すべて過去に配信済みか、RSSの更新がありません）")
+            return
+
+        # 2. 記事の選定と生成
         raw_output = generate_news_article(articles)
         generated_articles = parse_generated_content(raw_output)
         
         if not generated_articles:
-            logging.error("記事の生成に失敗しました。")
+            logging.error("記事の生成に失敗しました（JSONに変換できませんでした）")
             return
             
-        logging.info(f"{len(generated_articles)}件の記事が生成されました。Notionへ順番に投稿します。")
+        logging.info(f"{len(generated_articles)}件の【全く新しい】記事が生成されました。Notionへ順番に投稿します。")
         
+        # 3. Notionへ投稿
         for item in generated_articles:
             title = item.get("title", "無題")
             markdown_content = item.get("markdown", "")
