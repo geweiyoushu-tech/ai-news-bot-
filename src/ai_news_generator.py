@@ -7,14 +7,23 @@ from datetime import datetime
 from google import genai
 from google.genai import types
 
-# ログの設定
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # --- 設定 ---
-RSS_FEEDS = [
-    "https://rss.itmedia.co.jp/rss/2.0/ait.xml",
-    "https://ledge.ai/feed/",
-    "https://ainow.ai/feed/",
+# ニュース系（最新動向・発表）
+NEWS_FEEDS = [
+    "https://rss.itmedia.co.jp/rss/2.0/ait.xml",        # ITmedia AI+
+    "https://ledge.ai/feed/",                             # Ledge.ai
+    "https://ainow.ai/feed/",                             # AINOW
+    "https://www.watch.impress.co.jp/data/rss/1.0/ipw/feed.rdf", # Impress Watch
+    "https://feeds.feedburner.com/moongift",               # テック系ニュース
+    "https://gigazine.net/news/rss_2.0/",                  # GIGAZINE
+    "https://www.theverge.com/rss/ai-artificial-intelligence/index.xml", # The Verge AI
+    "https://www.wired.com/feed/tag/ai/latest/rss",        # WIRED AI
+]
+
+# Tips・活用テクニック系
+TIPS_FEEDS = [
     "https://zenn.dev/topics/chatgpt/feed",
     "https://zenn.dev/topics/ai/feed",
     "https://qiita.com/tags/chatgpt/feed",
@@ -27,7 +36,6 @@ NOTION_DATABASE_ID = os.environ.get("NOTION_DATABASE_ID")
 
 
 def get_posted_titles_from_notion():
-    """Notionから過去に投稿した記事のタイトル一覧を取得する"""
     logging.info("Notionから過去の投稿履歴を確認します...")
     if not NOTION_API_KEY or not NOTION_DATABASE_ID:
         return set()
@@ -38,8 +46,6 @@ def get_posted_titles_from_notion():
         "Content-Type": "application/json",
         "Notion-Version": "2022-06-28"
     }
-    
-    # 直近30件を取得して重複を避ける
     data = {"page_size": 30}
     posted_titles = set()
     
@@ -53,7 +59,6 @@ def get_posted_titles_from_notion():
                     if prop_data.get("type") == "title":
                         title_arr = prop_data.get("title", [])
                         if title_arr:
-                            # プレーンテキストから「【デイリーAIニュース】」を外して純粋なタイトルにする
                             raw_title = title_arr[0].get("plain_text", "")
                             clean_title = raw_title.replace("【デイリーAIニュース】", "").strip()
                             posted_titles.add(clean_title)
@@ -62,61 +67,59 @@ def get_posted_titles_from_notion():
             logging.warning("Notionからの履歴取得に失敗しました。")
     except Exception as e:
         logging.error(f"Notionからの履歴取得エラー: {e}")
-        
     return posted_titles
 
 
-def fetch_rss_feeds(urls, exclude_titles):
-    logging.info("RSSフィードからの記事取得を開始します...")
+def fetch_rss_feeds(urls, exclude_titles, tag=""):
     articles = []
     seen_urls = set()
-    
     for url in urls:
         try:
             feed = feedparser.parse(url)
-            for entry in feed.entries[:5]: # 各サイト上位5件
+            for entry in feed.entries[:5]:
                 link = entry.link
                 title = entry.title
-                
-                # 過去にNotionに投稿したタイトルと似ているものは除外する
                 is_excluded = False
                 for ex_title in exclude_titles:
                     if (title in ex_title) or (ex_title in title):
                         is_excluded = True
                         break
-                        
                 if not is_excluded and link not in seen_urls:
                     seen_urls.add(link)
                     articles.append({
                         "title": title,
                         "link": link,
                         "published": getattr(entry, "published", getattr(entry, "updated", "")),
-                        "summary": getattr(entry, "summary", "")[:200]
+                        "summary": getattr(entry, "summary", "")[:200],
+                        "category": tag
                     })
         except Exception as e:
             logging.error(f"フィード取得エラー ({url}): {e}")
-            
-    logging.info(f"重複・過去分を除外し、合計 {len(articles)} 件の新しい記事候補を取得しました。")
     return articles
 
-def generate_news_article(articles):
-    logging.info("Gemini APIを使用して新しい記事の選定と生成を開始します...")
+
+def generate_news_article(news_articles, tips_articles):
+    logging.info("Gemini APIを使用して記事の選定と生成を開始します...")
     if not GEMINI_API_KEY:
-        raise ValueError("GEMINI_API_KEY Environment variable not set.")
+        raise ValueError("GEMINI_API_KEY 環境変数が設定されていません。")
 
-    if not articles:
-        return "[]" # 新しい記事がない場合
+    news_text = ""
+    for idx, a in enumerate(news_articles):
+        news_text += f"[ニュース候補{idx+1}] タイトル: {a['title']}\nURL: {a['link']}\n概要: {a['summary']}\n\n"
 
-    articles_text = ""
-    for idx, article in enumerate(articles):
-        articles_text += f"[候補番号: {idx+1}]\nタイトル: {article['title']}\nURL: {article['link']}\n概要: {article['summary']}\n\n"
+    tips_text = ""
+    for idx, a in enumerate(tips_articles):
+        tips_text += f"[Tips候補{idx+1}] タイトル: {a['title']}\nURL: {a['link']}\n概要: {a['summary']}\n\n"
 
     system_instruction = """あなたは最新のAIニュースを配信する編集アシスタントです。
 AIに詳しくない受講生にAIを身近に感じてもらうため、専門用語を避け、親しみやすい解説を心がけてください。
 
-【最重要ルール】
-1. 必ず【今日の記事リスト】から、**それぞれ全くトピックが異なる別々の記事（重複禁止）**を「3件」選んでください。
-2. 3件とも、以下の【Markdown構成】を最後まで1行も省略せずに書き切ってください（「概要」だけで書き止めることは禁止です。必ず「詳しい解説」「具体的な使い方」「リンク」全て含めてください）。
+【最重要ルール：記事の選び方】
+以下の構成で、合計3件の記事を選んでください。
+★ 記事1・記事2 → 必ず【ニュース記事リスト】から選ぶこと（新サービス発表、AI導入事例、大型提携、新機能リリースなどの「最新ニュース」）
+★ 記事3 → 必ず【Tips・テクニック記事リスト】から選ぶこと（プロンプト術、効率化テクニック、活用ノウハウなどの「実践Tips」）
+※ 3件すべて異なるトピックにすること（重複禁止）。
+※ 3件すべて最後まで省略せずに書き切ること（「概要」だけで止めるのは禁止）。
 
 【ピックアップ基準】
 優先度高: 読者が「明日から使ってみたい！」と思えるニュース
@@ -146,7 +149,13 @@ AIに詳しくない受講生にAIを身近に感じてもらうため、専門�
 * **参考記事:** [（元のニュース記事のタイトル）]（（元のニュース記事のURL））
 """
 
-    prompt = f"以下のリストから、トピック・URLが重複しないように3件の異なる記事を選び、それぞれの解説をMarkdownで生成してください。\n\n【今日の記事リスト】\n{articles_text}"
+    prompt = f"""以下の2種類のリストから、ルールに従って合計3件選び、それぞれの解説をMarkdownで生成してください。
+
+【ニュース記事リスト（ここから2件選ぶこと）】
+{news_text}
+
+【Tips・テクニック記事リスト（ここから1件選ぶこと）】
+{tips_text}"""
 
     client = genai.Client(api_key=GEMINI_API_KEY)
     
@@ -188,7 +197,6 @@ def parse_generated_content(content):
 def create_notion_page(title, markdown_content):
     if not NOTION_API_KEY or not NOTION_DATABASE_ID:
         return False
-        
     url = "https://api.notion.com/v1/pages"
     headers = {
         "Authorization": f"Bearer {NOTION_API_KEY}",
@@ -211,9 +219,7 @@ def create_notion_page(title, markdown_content):
     data = {
         "parent": {"database_id": NOTION_DATABASE_ID},
         "properties": {
-            "title": {  
-                "title": [{"text": {"content": f"【デイリーAIニュース】{title}"}}]
-            }
+            "title": {"title": [{"text": {"content": f"【デイリーAIニュース】{title}"}}]}
         },
         "children": create_text_blocks(markdown_content)
     }
@@ -228,25 +234,28 @@ def create_notion_page(title, markdown_content):
 
 def main():
     try:
-        # 0. Notionから過去に投稿した記事のタイトルを取得（直近30件）
+        # 0. 過去の投稿タイトルを取得
         posted_titles = get_posted_titles_from_notion()
 
-        # 1. ニュースの収集（過去に投稿したタイトルを除外する！）
-        articles = fetch_rss_feeds(RSS_FEEDS, posted_titles)
+        # 1. ニュース系とTips系を分けて収集
+        news_articles = fetch_rss_feeds(NEWS_FEEDS, posted_titles, tag="news")
+        tips_articles = fetch_rss_feeds(TIPS_FEEDS, posted_titles, tag="tips")
         
-        if not articles:
-            logging.info("新しい記事候補が見つかりませんでした（すべて過去に配信済みか、RSSの更新がありません）")
+        logging.info(f"ニュース系: {len(news_articles)}件 / Tips系: {len(tips_articles)}件")
+        
+        if not news_articles and not tips_articles:
+            logging.info("新しい記事候補がありません。すべて配信済みか、RSSの更新がありません。")
             return
 
-        # 2. 記事の選定と生成
-        raw_output = generate_news_article(articles)
+        # 2. AIで記事を選定・生成（ニュース2件 + Tips1件）
+        raw_output = generate_news_article(news_articles, tips_articles)
         generated_articles = parse_generated_content(raw_output)
         
         if not generated_articles:
-            logging.error("記事の生成に失敗しました（JSONに変換できませんでした）")
+            logging.error("記事の生成に失敗しました。")
             return
             
-        logging.info(f"{len(generated_articles)}件の【全く新しい】記事が生成されました。Notionへ順番に投稿します。")
+        logging.info(f"{len(generated_articles)}件の記事が生成されました。Notionへ順番に投稿します。")
         
         # 3. Notionへ投稿
         for item in generated_articles:
