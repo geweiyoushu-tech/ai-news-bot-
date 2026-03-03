@@ -13,12 +13,14 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 # --- 設定 ---
 NEWS_FEEDS = [
     "https://rss.itmedia.co.jp/rss/2.0/ait.xml",
+    "https://rss.itmedia.co.jp/rss/2.0/enterprise.xml",  # DX・エンタープライズ
     "https://ledge.ai/feed/",
     "https://ainow.ai/feed/",
     "https://www.watch.impress.co.jp/data/rss/1.0/ipw/feed.rdf",
     "https://gigazine.net/news/rss_2.0/",
     "https://www.theverge.com/rss/ai-artificial-intelligence/index.xml",
     "https://www.wired.com/feed/tag/ai/latest/rss",
+    "https://enterprisezine.jp/rss/new/", # DX・企業IT
 ]
 TIPS_FEEDS = [
     "https://zenn.dev/topics/chatgpt/feed",
@@ -36,7 +38,8 @@ AI_KEYWORDS = [
     "自動化", "RPA", "エージェント", "agent",
     "Stable Diffusion", "Midjourney", "DALL-E", "Sora",
     "ニューラル", "トランスフォーマー", "ファインチューニング",
-    "RAG", "ベクトル", "埋め込み", "embedding"
+    "RAG", "ベクトル", "埋め込み", "embedding",
+    "DX", "dx", "デジタルトランスフォーメーション", "業務効率化", "働き方改革"
 ]
 # 除外する画像パターン（アイコン、ロゴ、広告など）
 EXCLUDED_IMAGE_PATTERNS = [
@@ -167,8 +170,17 @@ def fetch_rss_feeds(urls, exclude_titles, tag=""):
                     if (title in ex_title) or (ex_title in title):
                         is_excluded = True
                         break
-                if not is_ai_related(title, summary):
-                    continue
+                # Try getting image from RSS
+                item_image = ""
+                if "media_content" in entry and len(entry.media_content) > 0:
+                    item_image = entry.media_content[0].get("url", "")
+                elif "media_thumbnail" in entry and len(entry.media_thumbnail) > 0:
+                    item_image = entry.media_thumbnail[0].get("url", "")
+                elif "links" in entry:
+                    for l in entry.links:
+                        if "image" in l.get("type", ""):
+                            item_image = l.get("href", "")
+                            break
                 if not is_excluded and link not in seen_urls:
                     seen_urls.add(link)
                     articles.append({
@@ -176,12 +188,13 @@ def fetch_rss_feeds(urls, exclude_titles, tag=""):
                         "link": link,
                         "published": getattr(entry, "published", getattr(entry, "updated", "")),
                         "summary": summary,
-                        "category": tag
+                        "category": tag,
+                        "image_url": item_image
                     })
         except Exception as e:
             logging.error(f"フィード取得エラー ({url}): {e}")
     return articles
-def generate_news_articles(news_articles, tips_articles):
+def generate_news_articles(news_articles, tips_articles, posted_titles):
     logging.info("Gemini APIを使用して記事の選定と生成を開始します...")
     if not GEMINI_API_KEY:
         raise ValueError("GEMINI_API_KEY 環境変数が設定されていません。")
@@ -191,12 +204,16 @@ def generate_news_articles(news_articles, tips_articles):
     tips_text = ""
     for idx, a in enumerate(tips_articles):
         tips_text += f"[Tips候補{idx+1}] タイトル: {a['title']}\nURL: {a['link']}\n概要: {a['summary']}\n\n"
-    system_instruction = """あなたはAIニュースの編集アシスタントです。
+    past_titles_str = "\n".join([f"- {t}" for t in list(posted_titles)[:100]])
+    system_instruction = f"""あなたはAIニュースの編集アシスタントです。
 【目的】
 ・受講生が実務活用を具体的にイメージできる内容にする
 ・リテラシーが低い人でも一読で理解できる構成にする
 ・難しい言葉は使わない
 ・元記事の内容は一切変更しない（追加・削除・推測禁止）
+【過去の配信済み記事（重複除外用・最重要！）】
+以下のトピックは既に過去に配信済みです。これらと同じニュース、または非常に似た内容のニュースは「絶対に」選ばないでください。
+{past_titles_str}
 【著作権に関する最重要ルール】
 ・元記事のタイトルや文章をそのままコピーして使うことは禁止。必ず自分の言葉で書き直すこと。
 ・元記事の見出しや本文の表現をそのまま流用せず、事実だけを抽出して独自の文章で再構成すること。
@@ -207,9 +224,9 @@ def generate_news_articles(news_articles, tips_articles):
 ★ 記事8〜10 → 必ず【Tips・テクニック記事リスト】から選ぶこと
 ※ 10件すべて異なるトピック・異なるURLにすること（重複禁止）。
 ※ 10件すべて、以下のMarkdown構成を最後まで省略せずに書き切ること。
-※ AI（人工知能）に直接関係のない記事は絶対に選ばないこと。
+※ AI（人工知能）やデジタルトランスフォーメーション（DX）に直接関係のない記事は絶対に選ばないこと。
 【ピックアップ基準】
-優先度高: 読者が「明日から使ってみたい！」と思えるニュース
+優先度高: 読者が「明日から使ってみたい！」と思えるニュース、企業のDX事例や業務効率化の成功事例
 優先度中: 社会的な影響が大きい話題など、未来を感じられるニュース
 【内容の正確性ルール（厳守）】
 ・元記事が「〇選」「〇つのツール」「〇つの方法」のようにリスト形式で紹介している場合、解説記事の中でもそのリストの具体的な項目名を必ず列挙すること。
@@ -506,7 +523,7 @@ def main():
         if not news_articles and not tips_articles:
             logging.info("新しい記事候補がありません。")
             return
-        raw_output = generate_news_articles(news_articles, tips_articles)
+        raw_output = generate_news_articles(news_articles, tips_articles, posted_titles)
         generated_articles = parse_generated_content(raw_output)
         if not generated_articles:
             logging.error("記事の生成に失敗しました。")
@@ -522,7 +539,20 @@ def main():
             image_urls = []
             if article_url:
                 logging.info(f"画像抽出中: {article_url[:60]}...")
+                
+                # RSSからすでに画像が取得できているか探す
+                rss_image = ""
+                for a in news_articles + tips_articles:
+                    if a['link'] == article_url and a.get('image_url'):
+                        rss_image = a['image_url']
+                        break
+                # スクレイピングで画像抽出を試みる
                 image_urls = extract_images_from_url(article_url, max_images=5)
+                
+                # スクレイピングで1枚も取れなかった場合、RSSの画像をフォールバックとして使う
+                if not image_urls and rss_image:
+                    logging.info(f"  → スクレイピング失敗のためRSSの画像を使用します: {rss_image}")
+                    image_urls.append(rss_image)
             # Notionへ投稿（画像付き）
             create_notion_page(title, markdown_content, image_urls=image_urls, source_url=article_url)
     except Exception as e:
