@@ -24,7 +24,9 @@ NEWS_FEEDS = [
 ]
 TIPS_FEEDS = [
     "https://qiita.com/tags/chatgpt/feed",
-    "https://qiita.com/tags/ai/feed"
+    "https://qiita.com/tags/ai/feed",
+    "https://note.com/hashtag/ChatGPT/rss",
+    "https://note.com/hashtag/生成AI/rss"
 ]
 AI_KEYWORDS = [
     "AI", "ai", "人工知能", "機械学習", "深層学習", "ディープラーニング",
@@ -224,7 +226,7 @@ def generate_news_articles(news_articles, tips_articles, posted_titles):
 ※ 10件すべて、以下のMarkdown構成を最後まで省略せずに書き切ること。
 ※ AI（人工知能）やデジタルトランスフォーメーション（DX）に直接関係のない記事は絶対に選ばないこと。
 【ピックアップ基準】
-優先度高: 読者が「明日から使ってみたい！」と思えるニュース、企業のDX事例や業務効率化の成功事例
+優先度高: 読者が「明日から使ってみたい！」と思えるニュース、企業のDX事例や業務効率化の成功事例、AI初心者や中級者が「うまく使うコツ」として実践できるテクニック
 優先度中: 社会的な影響が大きい話題など、未来を感じられるニュース
 【内容の正確性ルール（厳守）】
 ・元記事が「〇選」「〇つのツール」「〇つの方法」のようにリスト形式で紹介している場合、解説記事の中でもそのリストの具体的な項目名を必ず列挙すること。
