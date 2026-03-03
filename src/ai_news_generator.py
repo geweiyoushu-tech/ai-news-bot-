@@ -154,10 +154,6 @@ def generate_news_articles(news_articles, tips_articles):
 
 【ピックアップ基準】
 優先度高: 読者が「明日から使ってみたい！」と思えるニュース
-- 身近なサービスへのAI導入
-- 有名なAIツールの「無料」または簡単な新機能
-- 面倒な作業が劇的に楽になる事例
-- すぐに使えるAIツールのプロンプト術
 優先度中: 社会的な影響が大きい話題など、未来を感じられるニュース
 
 【内容の正確性ルール（厳守）】
@@ -184,11 +180,11 @@ def generate_news_articles(news_articles, tips_articles):
 ・語尾は「〜です。」「〜ます。」「〜でしょう。」「〜ました。」「〜となります。」「〜が見込まれます。」「〜としています。」等のニュース調の表現を使うこと
 
 【太字のルール（厳守）】
-・Markdown内で ** を使った太字装飾は以下の3箇所のみに限定すること。それ以外は絶対に太字にしないこと。
+・Markdown内で ** を使った太字装飾は以下の3箇所のみに限定すること。
   1. 「一言でいうと：」のラベル部分
-  2. ポイントの見出し（例：「対応言語の拡充」などの箇条書きの先頭ラベル）
-  3. ステップの見出し（例：「公式サイトにアクセスする」などの番号付きリストの先頭ラベル）
-・本文中のキーワード、サービス名、数値などを太字にすることは禁止。
+  2. ポイントの見出し（箇条書きの先頭ラベル）
+  3. ステップの見出し（番号付きリストの先頭ラベル）
+・上記以外の本文、キーワード、サービス名、数値などを太字にすることは禁止。
 
 【Markdown構成（必ずこの通りにすること）】
 ## 💡 概要
@@ -200,7 +196,7 @@ def generate_news_articles(news_articles, tips_articles):
 **一言でいうと：** （一番伝えたいことを1行で）
 
 - **（ポイント1のタイトル）**
-  （ポイント1の具体的な内容を説明。概要との重複禁止。自分の言葉で書くこと。元記事がリスト形式の場合は具体的な項目名を列挙すること）
+  （ポイント1の具体的な内容を説明。概要との重複禁止。自分の言葉で書くこと）
 - **（ポイント2のタイトル）**
   （ポイント2の具体的な内容を説明）
 
@@ -271,7 +267,7 @@ def parse_generated_content(content):
 
 
 def parse_rich_text(text):
-    """Markdown の **太字** を Notion の rich_text annotations に変換する"""
+    """Markdown の **太字** を Notion の rich_text bold annotation に変換"""
     rich_text = []
     parts = re.split(r'(\*\*.*?\*\*)', text)
     for part in parts:
@@ -291,6 +287,135 @@ def parse_rich_text(text):
     return rich_text
 
 
+def create_notion_blocks(markdown_text):
+    """MarkdownをNotionのブロック形式に正しく変換する"""
+    blocks = []
+    lines = markdown_text.split('\n')
+    i = 0
+
+    while i < len(lines):
+        line = lines[i]
+        stripped = line.strip()
+
+        # 空行はスキップ
+        if not stripped:
+            i += 1
+            continue
+
+        # --- 見出し2 ---
+        if stripped.startswith('## '):
+            heading_text = stripped[3:][:2000]
+            blocks.append({
+                "object": "block",
+                "type": "heading_2",
+                "heading_2": {"rich_text": [{"type": "text", "text": {"content": heading_text}}]}
+            })
+            i += 1
+            continue
+
+        # --- 区切り線 ---
+        if stripped == '---':
+            blocks.append({
+                "object": "block",
+                "type": "divider",
+                "divider": {}
+            })
+            i += 1
+            continue
+
+        # --- 箇条書き (- で始まる行) ---
+        if stripped.startswith('- '):
+            item_text = stripped[2:]
+            # 次の行がインデントされた説明文なら結合する
+            desc_lines = []
+            j = i + 1
+            while j < len(lines) and lines[j].startswith('  ') and not lines[j].strip().startswith('- '):
+                desc_lines.append(lines[j].strip())
+                j += 1
+            if desc_lines:
+                item_text = item_text + '\n' + '\n'.join(desc_lines)
+            rich_text = parse_rich_text(item_text[:2000])
+            blocks.append({
+                "object": "block",
+                "type": "bulleted_list_item",
+                "bulleted_list_item": {"rich_text": rich_text}
+            })
+            i = j
+            continue
+
+        # --- 番号付きリスト (1. 2. 3. で始まる行) ---
+        num_match = re.match(r'^(\d+)\.\s+', stripped)
+        if num_match:
+            item_text = stripped[num_match.end():]
+            # 次の行がインデントされた説明文なら結合する
+            desc_lines = []
+            j = i + 1
+            while j < len(lines) and lines[j].startswith('   ') and not re.match(r'^\d+\.\s+', lines[j].strip()):
+                desc_lines.append(lines[j].strip())
+                j += 1
+            if desc_lines:
+                item_text = item_text + '\n' + '\n'.join(desc_lines)
+            rich_text = parse_rich_text(item_text[:2000])
+            blocks.append({
+                "object": "block",
+                "type": "numbered_list_item",
+                "numbered_list_item": {"rich_text": rich_text}
+            })
+            i = j
+            continue
+
+        # --- リンク行 (* で始まる行) ---
+        if stripped.startswith('* '):
+            link_text = stripped[2:]
+            # Markdown [text](url) のリンクを解析
+            link_match = re.search(r'\[([^\]]+)\]\(([^)]+)\)', link_text)
+            if link_match:
+                label_before = link_text[:link_match.start()]
+                link_label = link_match.group(1)
+                link_url = link_match.group(2)
+                rich_text = []
+                if label_before.strip():
+                    rich_text.append({"type": "text", "text": {"content": label_before}})
+                rich_text.append({
+                    "type": "text",
+                    "text": {"content": link_label, "link": {"url": link_url}}
+                })
+                blocks.append({
+                    "object": "block",
+                    "type": "bulleted_list_item",
+                    "bulleted_list_item": {"rich_text": rich_text}
+                })
+            else:
+                rich_text = parse_rich_text(link_text[:2000])
+                blocks.append({
+                    "object": "block",
+                    "type": "bulleted_list_item",
+                    "bulleted_list_item": {"rich_text": rich_text}
+                })
+            i += 1
+            continue
+
+        # --- 通常のテキスト（段落） ---
+        para_lines = [stripped]
+        j = i + 1
+        while j < len(lines):
+            next_stripped = lines[j].strip()
+            if not next_stripped or next_stripped.startswith('## ') or next_stripped == '---' or next_stripped.startswith('- ') or next_stripped.startswith('* ') or re.match(r'^\d+\.\s+', next_stripped):
+                break
+            para_lines.append(next_stripped)
+            j += 1
+        para_text = '\n'.join(para_lines)
+        rich_text = parse_rich_text(para_text[:2000])
+        blocks.append({
+            "object": "block",
+            "type": "paragraph",
+            "paragraph": {"rich_text": rich_text}
+        })
+        i = j
+
+    return blocks
+
+
 def create_notion_page(title, markdown_content):
     if not NOTION_API_KEY or not NOTION_DATABASE_ID:
         return False
@@ -301,40 +426,14 @@ def create_notion_page(title, markdown_content):
         "Notion-Version": "2022-06-28"
     }
 
-    def create_text_blocks(text):
-        blocks = []
-        for para in text.split('\n\n'):
-            if not para.strip():
-                continue
-            if para.startswith('## '):
-                heading_text = para.replace('## ', '')[:2000]
-                blocks.append({
-                    "object": "block",
-                    "type": "heading_2",
-                    "heading_2": {"rich_text": [{"type": "text", "text": {"content": heading_text}}]}
-                })
-            elif para.strip() == '---':
-                blocks.append({
-                    "object": "block",
-                    "type": "divider",
-                    "divider": {}
-                })
-            else:
-                # **太字** を Notion の bold annotation に正しく変換する
-                rich_text = parse_rich_text(para[:2000])
-                blocks.append({
-                    "object": "block",
-                    "type": "paragraph",
-                    "paragraph": {"rich_text": rich_text}
-                })
-        return blocks
+    blocks = create_notion_blocks(markdown_content)
 
     data = {
         "parent": {"database_id": NOTION_DATABASE_ID},
         "properties": {
             "title": {"title": [{"text": {"content": f"【デイリーAIニュース】{title}"}}]}
         },
-        "children": create_text_blocks(markdown_content)
+        "children": blocks
     }
 
     response = requests.post(url, headers=headers, json=data)
@@ -344,6 +443,7 @@ def create_notion_page(title, markdown_content):
     else:
         logging.error(f"Notion投稿エラー: {response.status_code}")
         return False
+
 
 def main():
     try:
