@@ -14,7 +14,6 @@ NEWS_FEEDS = [
     "https://ledge.ai/feed/",
     "https://ainow.ai/feed/",
     "https://www.watch.impress.co.jp/data/rss/1.0/ipw/feed.rdf",
-    "https://feeds.feedburner.com/moongift",
     "https://gigazine.net/news/rss_2.0/",
     "https://www.theverge.com/rss/ai-artificial-intelligence/index.xml",
     "https://www.wired.com/feed/tag/ai/latest/rss",
@@ -26,9 +25,29 @@ TIPS_FEEDS = [
     "https://qiita.com/tags/chatgpt/feed",
     "https://qiita.com/tags/ai/feed"
 ]
+# AI関連のキーワード（選定フィルター用）
+AI_KEYWORDS = [
+    "AI", "ai", "人工知能", "機械学習", "深層学習", "ディープラーニング",
+    "ChatGPT", "chatgpt", "GPT", "Gemini", "gemini", "Claude", "claude",
+    "LLM", "大規模言語モデル", "生成AI", "生成ＡＩ",
+    "OpenAI", "Anthropic", "Google AI", "Microsoft AI",
+    "自然言語処理", "画像生成", "音声認識", "チャットボット",
+    "プロンプト", "Copilot", "copilot", "Perplexity",
+    "自動化", "RPA", "エージェント", "agent",
+    "Stable Diffusion", "Midjourney", "DALL-E", "Sora",
+    "ニューラル", "トランスフォーマー", "ファインチューニング",
+    "RAG", "ベクトル", "埋め込み", "embedding"
+]
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 NOTION_API_KEY = os.environ.get("NOTION_API_KEY")
 NOTION_DATABASE_ID = os.environ.get("NOTION_DATABASE_ID")
+def is_ai_related(title, summary):
+    """タイトルまたは概要にAI関連キーワードが含まれているか判定"""
+    text = (title + " " + summary).lower()
+    for kw in AI_KEYWORDS:
+        if kw.lower() in text:
+            return True
+    return False
 def get_posted_titles_from_notion():
     logging.info("Notionから過去の投稿履歴を確認します...")
     if not NOTION_API_KEY or not NOTION_DATABASE_ID:
@@ -69,18 +88,23 @@ def fetch_rss_feeds(urls, exclude_titles, tag=""):
             for entry in feed.entries[:10]:
                 link = entry.link
                 title = entry.title
+                summary = getattr(entry, "summary", "")[:200]
+                # 過去投稿との重複チェック
                 is_excluded = False
                 for ex_title in exclude_titles:
                     if (title in ex_title) or (ex_title in title):
                         is_excluded = True
                         break
+                # AI関連キーワードフィルター（AI無関係な記事を除外）
+                if not is_ai_related(title, summary):
+                    continue
                 if not is_excluded and link not in seen_urls:
                     seen_urls.add(link)
                     articles.append({
                         "title": title,
                         "link": link,
                         "published": getattr(entry, "published", getattr(entry, "updated", "")),
-                        "summary": getattr(entry, "summary", "")[:200],
+                        "summary": summary,
                         "category": tag
                     })
         except Exception as e:
@@ -102,11 +126,17 @@ def generate_news_articles(news_articles, tips_articles):
 ・リテラシーが低い人でも一読で理解できる構成にする
 ・難しい言葉は使わない
 ・元記事の内容は一切変更しない（追加・削除・推測禁止）
+【著作権に関する最重要ルール】
+・元記事のタイトルや文章をそのままコピーして使うことは禁止。必ず自分の言葉で書き直すこと。
+・元記事の見出しや本文の表現をそのまま流用せず、事実だけを抽出して独自の文章で再構成すること。
+・引用の範囲を超えた転載にならないよう、元記事の文章構成や表現をなぞらないこと。
+・「🔗 リンク」セクションに元記事へのリンクを必ず掲載し、読者が元記事を参照できるようにすること。
 【記事の選び方（合計10件）】
 ★ 記事1〜7 → 必ず【ニュース記事リスト】から選ぶこと（新サービス発表、AI導入事例、大型提携、新機能リリースなどの最新ニュース）
 ★ 記事8〜10 → 必ず【Tips・テクニック記事リスト】から選ぶこと（プロンプト術、効率化テクニック、活用ノウハウなどの実践Tips）
 ※ 10件すべて異なるトピック・異なるURLにすること（重複禁止）。
 ※ 10件すべて、以下のMarkdown構成を最後まで省略せずに書き切ること。
+※ AI（人工知能）に直接関係のない記事は絶対に選ばないこと。
 【ピックアップ基準】
 優先度高: 読者が「明日から使ってみたい！」と思えるニュース
 - 身近なサービスへのAI導入
@@ -114,7 +144,7 @@ def generate_news_articles(news_articles, tips_articles):
 - 面倒な作業が劇的に楽になる事例
 - すぐに使えるAIツールのプロンプト術
 優先度中: 社会的な影響が大きい話題など、未来を感じられるニュース
-【最重要：文章のルール】
+【文章のルール】
 ・「概要」セクションの最初の2文で「何が起きたニュースか」を明確に書くこと
 ・「詳しい解説」セクションでは、最初にどんな話なのかを書くこと
 ・主語を必ず明示し、省略しないこと
@@ -125,18 +155,24 @@ def generate_news_articles(news_articles, tips_articles):
 ・同じ語尾の反復を避け、文末表現に変化をつけること（「です。」「です。」「です。」の連続は禁止）
 ・同じ意味の言い換えは禁止し、用語は統一すること
 【文体】
-・ニュース調
+・ニュース記事の文体を厳守すること
 ・ですます調
 ・読者が実務を想像できる具体性を持たせる
 ・過度な感情表現は禁止（「驚きの」「衝撃の」「すごい」「ヤバい」等は使わない）
+・話し言葉は禁止（「〜ですね。」「〜ですよね。」「〜してみましょう！」「〜かもしれませんね。」等は使わない）
+・語尾は「〜です。」「〜ます。」「〜でしょう。」「〜ました。」「〜となります。」「〜が見込まれます。」「〜としています。」等のニュース調の表現を使うこと
+【太字（**）のルール】
+・太字は「見出し名」と「セクション内の強調ラベル（ポイント名やステップ名）」にのみ使用すること
+・本文中のキーワードや文章を太字にしないこと
+・過剰な太字装飾は禁止
 【Markdown構成（必ずこの通りにすること）】
 ## 💡 概要
-（最初の2文で「何が起きたか」を明確に。続けてニュースの要点を簡潔にまとめる）
+（最初の2文で「何が起きたか」を明確に。続けてニュースの要点を簡潔にまとめる。自分の言葉で書き直すこと）
 ---
 ## 🧐 詳しい解説
 **一言でいうと：** （一番伝えたいことを1行で）
 - **（ポイント1のタイトル）**
-  （ポイント1の具体的な内容を説明。概要との重複禁止）
+  （ポイント1の具体的な内容を説明。概要との重複禁止。自分の言葉で書くこと）
 - **（ポイント2のタイトル）**
   （ポイント2の具体的な内容を説明）
 ---
@@ -160,9 +196,15 @@ def generate_news_articles(news_articles, tips_articles):
         "items": {
             "type": "object",
             "properties": {
-                "title": {"type": "string"},
+                "title": {
+                    "type": "string",
+                    "description": "元記事のタイトルをそのまま使わず、独自の言葉で作成した記事タイトル"
+                },
                 "url": {"type": "string"},
-                "markdown": {"type": "string", "description": "必ず『💡 概要』『🧐 詳しい解説』『⚒️ 具体的な使い方』『🔗 リンク』の全構成を含めた完全なMarkdown文章。概要の最初の2文で何が起きたかを明確にし、主語を省略せず、説明の重複をせず、抽象表現を避け、語尾の反復を避けること。"}
+                "markdown": {
+                    "type": "string",
+                    "description": "著作権に配慮し元記事の文章を流用せず独自の言葉で書いた、全セクション（概要・詳しい解説・具体的な使い方・リンク）を含む完全なMarkdown。話し言葉禁止。太字は見出しと強調ラベルのみ。"
+                }
             },
             "required": ["title", "url", "markdown"]
         }
