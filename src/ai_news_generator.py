@@ -23,8 +23,6 @@ NEWS_FEEDS = [
     "https://enterprisezine.jp/rss/new/", # DX・企業IT
 ]
 TIPS_FEEDS = [
-    "https://zenn.dev/topics/chatgpt/feed",
-    "https://zenn.dev/topics/ai/feed",
     "https://qiita.com/tags/chatgpt/feed",
     "https://qiita.com/tags/ai/feed"
 ]
