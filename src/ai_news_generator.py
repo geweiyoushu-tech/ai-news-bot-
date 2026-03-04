@@ -10,21 +10,23 @@ from bs4 import BeautifulSoup
 from google import genai
 from google.genai import types
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-# --- 設定 ---
 NEWS_FEEDS = [
+    # 大手・一般ニュース（AI関連をキーワード抽出で拾う）
+    "https://news.yahoo.co.jp/rss/topics/top-picks.xml",      # Yahoo! 主要ニュース
+    "https://news.yahoo.co.jp/rss/topics/it.xml",             # Yahoo! IT・科学
+    "https://www3.nhk.or.jp/rss/news/cat0.xml",               # NHK 主要ニュース
+    "https://www3.nhk.or.jp/rss/news/cat3.xml",               # NHK 科学・医療
+    
+    # 既存のIT・DX・AI専門メディア
     "https://rss.itmedia.co.jp/rss/2.0/ait.xml",
-    "https://rss.itmedia.co.jp/rss/2.0/enterprise.xml",  # DX・エンタープライズ
+    "https://rss.itmedia.co.jp/rss/2.0/enterprise.xml",       
     "https://ledge.ai/feed/",
     "https://ainow.ai/feed/",
     "https://www.watch.impress.co.jp/data/rss/1.0/ipw/feed.rdf",
     "https://gigazine.net/news/rss_2.0/",
-    "https://www.theverge.com/rss/ai-artificial-intelligence/index.xml",
-    "https://www.wired.com/feed/tag/ai/latest/rss",
-    "https://enterprisezine.jp/rss/new/", # DX・企業IT
+    "https://enterprisezine.jp/rss/new/", 
 ]
 TIPS_FEEDS = [
-    "https://qiita.com/tags/chatgpt/feed",
-    "https://qiita.com/tags/ai/feed",
     "https://note.com/hashtag/ChatGPT/rss",
     "https://note.com/hashtag/生成AI/rss"
 ]
@@ -206,10 +208,15 @@ def generate_news_articles(news_articles, tips_articles, posted_titles):
         tips_text += f"[Tips候補{idx+1}] タイトル: {a['title']}\nURL: {a['link']}\n概要: {a['summary']}\n\n"
     past_titles_str = "\n".join([f"- {t}" for t in list(posted_titles)[:100]])
     system_instruction = f"""あなたはAIニュースの編集アシスタントです。
+【ターゲット読者の定義（ペルソナ）】
+以下のレベル感を「AI初心者・中級者」として明確に定義し、この読者が理解できる記事のみを選定・執筆すること。
+・レベル感：日常や業務で少しAI（ChatGPT等）を触ったことがある、または興味はあるが使いこなせていない非エンジニア。
+・知識量：プログラミング言語、API、パラメータチューニング、トークンなどの技術的な仕組みは全く知らない。
+・知りたいこと：「どんな指示（プロンプト）を出せば仕事が楽になるか」「無料で使える便利なAIツールは何か」「他社はどうやってAIで業務効率化しているか」という実用的な情報。
 【目的】
-・受講生が実務活用を具体的にイメージできる内容にする
-・リテラシーが低い人でも一読で理解できる構成にする
-・難しい言葉は使わない
+・初心者や中級者が、すぐに自分の仕事や日常でAIを活用できると感じられる内容にする
+・ITリテラシーが高くない人でも一読で完全に理解できるように、極端に噛み砕いて説明する
+・専門用語（コード、API、パラメータなど）が多く含まれる、難易度の高い技術的な記事は「絶対に」選ばない
 ・元記事の内容は一切変更しない（追加・削除・推測禁止）
 【過去の配信済み記事（重複除外用・最重要！）】
 以下のトピックは既に過去に配信済みです。これらと同じニュース、または非常に似た内容のニュースは「絶対に」選ばないでください。
@@ -226,8 +233,9 @@ def generate_news_articles(news_articles, tips_articles, posted_titles):
 ※ 10件すべて、以下のMarkdown構成を最後まで省略せずに書き切ること。
 ※ AI（人工知能）やデジタルトランスフォーメーション（DX）に直接関係のない記事は絶対に選ばないこと。
 【ピックアップ基準】
-優先度高: 読者が「明日から使ってみたい！」と思えるニュース、企業のDX事例や業務効率化の成功事例、AI初心者や中級者が「うまく使うコツ」として実践できるテクニック
+優先度高: 初心者でも「明日からすぐ使える！」と思える簡単なAI活用法、身近な業務効率化の成功事例、分かりやすいAIツールやサービスの紹介
 優先度中: 社会的な影響が大きい話題など、未来を感じられるニュース
+除外基準: プログラミングや開発に関する高度な技術記事、専門用語（LLMモデルの詳細設計やコーディング解説など）が多すぎる記事は選定ステップで必ず除外すること
 【内容の正確性ルール（厳守）】
 ・元記事が「〇選」「〇つのツール」「〇つの方法」のようにリスト形式で紹介している場合、解説記事の中でもそのリストの具体的な項目名を必ず列挙すること。
 ・元記事に含まれる固有名詞は正確に記載すること。
