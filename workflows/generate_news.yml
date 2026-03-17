@@ -1,9 +1,7 @@
 name: Daily AI News Generator
 
 on:
-  schedule:
-    # 毎日 日本時間 午前8時 (UTC 午後11時) に実行
-    - cron: '0 23 * * *'
+
   workflow_dispatch: # 手動実行用
 
 jobs:
