@@ -1,8 +1,7 @@
 name: Daily AI News Generator
 
 on:
-
-  workflow_dispatch: # 手動実行用
+workflow_dispatch: # 手動実行用
 
 jobs:
   generate-news:
