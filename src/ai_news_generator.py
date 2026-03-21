@@ -9,23 +9,20 @@ from urllib.parse import urljoin, urlparse
 from google import genai
 from google.genai import types
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# --- 情報源（この3カテゴリのみ） ---
 NEWS_FEEDS = [
     # 1. AI特化型の専門メディア（深掘りしたい人向け）
     "https://ledge.ai/feed/",
     "https://ainow.ai/feed/",
-    "https://news.google.com/rss/search?q=AI+site:aismiley.co.jp&hl=ja&gl=JP&ceid=JP:ja", # AIsmiley (Google News RSS経由)
+    "https://news.google.com/rss/search?q=AI+site:aismiley.co.jp&hl=ja&gl=JP&ceid=JP:ja", # AIsmiley
     # 2. 大手ニュースサイトのAIカテゴリ（速報重視の人向け）
     "https://news.google.com/rss/search?q=AI+site:nikkei.com&hl=ja&gl=JP&ceid=JP:ja", # 日本経済新聞
     "https://news.google.com/rss/search?q=AI+site:nhk.or.jp&hl=ja&gl=JP&ceid=JP:ja", # NHKニュース
     "https://news.google.com/rss/search?q=AI+site:asahi.com&hl=ja&gl=JP&ceid=JP:ja", # 朝日新聞
     "https://news.google.com/rss/search?q=AI+site:yomiuri.co.jp&hl=ja&gl=JP&ceid=JP:ja", # 読売新聞
     # 3. XのAIトレンド（SNSの話題拾い上げ用）
-    "https://togetter.com/rss/it", # Togetter ITカテゴリ（Xでの話題まとめ。後続のキーワードフィルタでAI関連のみ抽出）
-    "https://news.yahoo.co.jp/rss/topics/it.xml", # Yahoo ITトレンド（SNSで話題のAIニュースも入りやすい）
-]
-TIPS_FEEDS = [
-    "https://note.com/hashtag/ChatGPT/rss",
-    "https://note.com/hashtag/生成AI/rss"
+    "https://togetter.com/rss/it", # Togetter ITカテゴリ
+    "https://news.yahoo.co.jp/rss/topics/it.xml", # Yahoo ITトレンド
 ]
 AI_KEYWORDS = [
     "AI", "ai", "人工知能", "機械学習", "深層学習", "ディープラーニング",
@@ -78,13 +75,13 @@ def get_posted_titles_from_notion():
     except Exception as e:
         logging.error(f"Notionからの履歴取得エラー: {e}")
     return posted_titles
-def fetch_rss_feeds(urls, exclude_titles, tag=""):
+def fetch_rss_feeds(urls, exclude_titles):
     articles = []
     seen_urls = set()
     for url in urls:
         try:
             feed = feedparser.parse(url)
-            for entry in feed.entries[:10]:
+            for entry in feed.entries[:15]:
                 link = entry.link
                 title = entry.title
                 summary = getattr(entry, "summary", "")[:200]
@@ -93,28 +90,24 @@ def fetch_rss_feeds(urls, exclude_titles, tag=""):
                     if (title in ex_title) or (ex_title in title):
                         is_excluded = True
                         break
-                if not is_excluded and link not in seen_urls:
+                if not is_excluded and link not in seen_urls and is_ai_related(title, summary):
                     seen_urls.add(link)
                     articles.append({
                         "title": title,
                         "link": link,
                         "published": getattr(entry, "published", getattr(entry, "updated", "")),
-                        "summary": summary,
-                        "category": tag
+                        "summary": summary
                     })
         except Exception as e:
             logging.error(f"フィード取得エラー ({url}): {e}")
     return articles
-def generate_news_articles(news_articles, tips_articles, posted_titles):
+def generate_news_articles(articles, posted_titles):
     logging.info("Gemini APIを使用して記事の選定と生成を開始します...")
     if not GEMINI_API_KEY:
         raise ValueError("GEMINI_API_KEY 環境変数が設定されていません。")
-    news_text = ""
-    for idx, a in enumerate(news_articles):
-        news_text += f"[ニュース候補{idx+1}] タイトル: {a['title']}\nURL: {a['link']}\n概要: {a['summary']}\n\n"
-    tips_text = ""
-    for idx, a in enumerate(tips_articles):
-        tips_text += f"[Tips候補{idx+1}] タイトル: {a['title']}\nURL: {a['link']}\n概要: {a['summary']}\n\n"
+    articles_text = ""
+    for idx, a in enumerate(articles):
+        articles_text += f"[候補{idx+1}] タイトル: {a['title']}\nURL: {a['link']}\n概要: {a['summary']}\n\n"
     past_titles_str = "\n".join([f"- {t}" for t in list(posted_titles)[:100]])
     system_instruction = f"""あなたはNewsPicksの編集者です。
 ユーザーが入力したニュースの情報を、AIスクール受講生向けの「AIニュース」として再構成してください。
@@ -125,6 +118,7 @@ def generate_news_articles(news_articles, tips_articles, posted_titles):
 ・知りたいこと：「どんな指示（プロンプト）を出せば仕事が楽になるか」「無料で使える便利なAIツールは何か」「他社はどうやってAIで業務効率化しているか」という実用的な情報。
 【過去の配信済み記事（重複除外用・最重要！）】
 以下のトピックは既に過去に配信済みです。これらと同じニュース、または非常に似た内容のニュースは「絶対に」選ばないでください。
+同じ元記事URL、同じサービス名の話題、同じ企業の同じ発表についての記事も重複とみなし、選んではいけません。
 {past_titles_str}
 【目的】
 ・初心者や中級者が、すぐに自分の仕事や日常でAIを活用できると感じられる内容にする
@@ -137,8 +131,7 @@ def generate_news_articles(news_articles, tips_articles, posted_titles):
 ・引用の範囲を超えた転載にならないよう、元記事の文章構成や表現をなぞらないこと。
 ・「リンク」セクションに元記事へのリンクを必ず掲載し、読者が元記事を参照できるようにすること。
 【記事の選び方（合計10件）】
-★ 記事1〜7 → 必ず【ニュース記事リスト】から選ぶこと
-★ 記事8〜10 → 必ず【Tips・テクニック記事リスト】から選ぶこと
+以下の候補リストから合計10件を選ぶこと。
 ※ 10件すべて異なるトピック・異なるURLにすること（重複禁止）。
 ※ 10件すべて、以下のMarkdown構成を最後まで省略せずに書き切ること。
 ※ AI（人工知能）に直接関係のない記事は絶対に選ばないこと。
@@ -199,11 +192,10 @@ def generate_news_articles(news_articles, tips_articles, posted_titles):
 【画像に関する指示】
 ・記事生成の際、画像はユーザー自身が選びたいという意向があるため、記事生成のみを行い、画像の選定や挿入は行わない。
 """
-    prompt = f"""以下の2種類のリストから、ルールに従って合計10件選び、それぞれの解説をMarkdownで生成してください。
-【ニュース記事リスト（ここから7件選ぶこと）】
-{news_text}
-【Tips・テクニック記事リスト（ここから3件選ぶこと）】
-{tips_text}"""
+    prompt = f"""以下の候補リストから、ルールに従って合計10件選び、それぞれの解説をMarkdownで生成してください。
+10件すべて異なるURLの記事にしてください。同じURLの記事を2回選ぶことは禁止です。
+【記事候補リスト】
+{articles_text}"""
     client = genai.Client(api_key=GEMINI_API_KEY)
     response_schema = {
         "type": "array",
@@ -403,24 +395,33 @@ def create_notion_page(title, markdown_content):
 def main():
     try:
         posted_titles = get_posted_titles_from_notion()
-        news_articles = fetch_rss_feeds(NEWS_FEEDS, posted_titles, tag="news")
-        tips_articles = fetch_rss_feeds(TIPS_FEEDS, posted_titles, tag="tips")
-        logging.info(f"ニュース系: {len(news_articles)}件 / Tips系: {len(tips_articles)}件")
-        if not news_articles and not tips_articles:
+        # 指定3カテゴリのみから記事を取得（note.comは含まない）
+        articles = fetch_rss_feeds(NEWS_FEEDS, posted_titles)
+        logging.info(f"AI関連の記事候補: {len(articles)}件")
+        if not articles:
             logging.info("新しい記事候補がありません。")
             return
-        raw_output = generate_news_articles(news_articles, tips_articles, posted_titles)
+        raw_output = generate_news_articles(articles, posted_titles)
         generated_articles = parse_generated_content(raw_output)
         if not generated_articles:
             logging.error("記事の生成に失敗しました。")
             return
-        logging.info(f"{len(generated_articles)}件の記事が生成されました。Notion投稿を開始します。")
+        # 重複URLチェック（同じURLの記事を2回投稿しない）
+        seen_urls = set()
+        unique_articles = []
         for item in generated_articles:
+            article_url = item.get("url", "")
+            if article_url not in seen_urls:
+                seen_urls.add(article_url)
+                unique_articles.append(item)
+            else:
+                logging.warning(f"重複URLを除外しました: {article_url[:60]}")
+        logging.info(f"{len(unique_articles)}件の記事をNotion投稿します。")
+        for item in unique_articles:
             title = item.get("title", "無題")
             markdown_content = item.get("markdown", "")
             if not markdown_content:
                 continue
-            # Notionへ投稿（画像なし）
             create_notion_page(title, markdown_content)
     except Exception as e:
         logging.error(f"実行中にエラーが発生しました: {e}")
