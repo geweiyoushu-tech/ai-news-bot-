@@ -6,25 +6,22 @@ import feedparser
 import requests
 from datetime import datetime
 from urllib.parse import urljoin, urlparse
-from bs4 import BeautifulSoup
 from google import genai
 from google.genai import types
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 NEWS_FEEDS = [
-    # 大手・一般ニュース（AI関連をキーワード抽出で拾う）
-    "https://news.yahoo.co.jp/rss/topics/top-picks.xml",      # Yahoo! 主要ニュース
-    "https://news.yahoo.co.jp/rss/topics/it.xml",             # Yahoo! IT・科学
-    "https://www3.nhk.or.jp/rss/news/cat0.xml",               # NHK 主要ニュース
-    "https://www3.nhk.or.jp/rss/news/cat3.xml",               # NHK 科学・医療
-    
-    # 既存のIT・DX・AI専門メディア
-    "https://rss.itmedia.co.jp/rss/2.0/ait.xml",
-    "https://rss.itmedia.co.jp/rss/2.0/enterprise.xml",       
+    # 1. AI特化型の専門メディア（深掘りしたい人向け）
     "https://ledge.ai/feed/",
     "https://ainow.ai/feed/",
-    "https://www.watch.impress.co.jp/data/rss/1.0/ipw/feed.rdf",
-    "https://gigazine.net/news/rss_2.0/",
-    "https://enterprisezine.jp/rss/new/", 
+    "https://news.google.com/rss/search?q=AI+site:aismiley.co.jp&hl=ja&gl=JP&ceid=JP:ja", # AIsmiley (Google News RSS経由)
+    # 2. 大手ニュースサイトのAIカテゴリ（速報重視の人向け）
+    "https://news.google.com/rss/search?q=AI+site:nikkei.com&hl=ja&gl=JP&ceid=JP:ja", # 日本経済新聞
+    "https://news.google.com/rss/search?q=AI+site:nhk.or.jp&hl=ja&gl=JP&ceid=JP:ja", # NHKニュース
+    "https://news.google.com/rss/search?q=AI+site:asahi.com&hl=ja&gl=JP&ceid=JP:ja", # 朝日新聞
+    "https://news.google.com/rss/search?q=AI+site:yomiuri.co.jp&hl=ja&gl=JP&ceid=JP:ja", # 読売新聞
+    # 3. XのAIトレンド（SNSの話題拾い上げ用）
+    "https://togetter.com/rss/it", # Togetter ITカテゴリ（Xでの話題まとめ。後続のキーワードフィルタでAI関連のみ抽出）
+    "https://news.yahoo.co.jp/rss/topics/it.xml", # Yahoo ITトレンド（SNSで話題のAIニュースも入りやすい）
 ]
 TIPS_FEEDS = [
     "https://note.com/hashtag/ChatGPT/rss",
@@ -43,14 +40,6 @@ AI_KEYWORDS = [
     "RAG", "ベクトル", "埋め込み", "embedding",
     "DX", "dx", "デジタルトランスフォーメーション", "業務効率化", "働き方改革"
 ]
-# 除外する画像パターン（アイコン、ロゴ、広告など）
-EXCLUDED_IMAGE_PATTERNS = [
-    "logo", "icon", "avatar", "badge", "button", "banner",
-    "ad-", "ads-", "advertisement", "tracking", "pixel",
-    "gravatar", "favicon", "sprite", "spacer",
-    "1x1", "widget", "share", "social", "twitter", "facebook",
-    "loading", "spinner", "arrow", "chevron"
-]
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 NOTION_API_KEY = os.environ.get("NOTION_API_KEY")
 NOTION_DATABASE_ID = os.environ.get("NOTION_DATABASE_ID")
@@ -60,74 +49,6 @@ def is_ai_related(title, summary):
         if kw.lower() in text:
             return True
     return False
-def extract_images_from_url(article_url, max_images=5):
-    """元記事のページから関連画像のURLを抽出する"""
-    images = []
-    try:
-        headers = {"User-Agent": "Mozilla/5.0 (compatible; AINewsBot/1.0)"}
-        resp = requests.get(article_url, headers=headers, timeout=10)
-        if resp.status_code != 200:
-            return images
-        soup = BeautifulSoup(resp.text, "html.parser")
-        # 1. OGP画像（記事のメイン画像として最も信頼性が高い）
-        og_image = soup.find("meta", property="og:image")
-        if og_image and og_image.get("content"):
-            img_url = og_image["content"]
-            if img_url.startswith("//"):
-                img_url = "https:" + img_url
-            images.append(img_url)
-        # 2. Twitter Card画像
-        tw_image = soup.find("meta", attrs={"name": "twitter:image"})
-        if tw_image and tw_image.get("content"):
-            img_url = tw_image["content"]
-            if img_url.startswith("//"):
-                img_url = "https:" + img_url
-            if img_url not in images:
-                images.append(img_url)
-        # 3. 記事本文中の画像
-        # 主要コンテンツエリアを探す
-        content_area = (
-            soup.find("article") or
-            soup.find("div", class_=re.compile(r"(article|content|post|entry|main)", re.I)) or
-            soup.find("main") or
-            soup.body
-        )
-        if content_area:
-            for img in content_area.find_all("img"):
-                src = img.get("src") or img.get("data-src") or img.get("data-lazy-src")
-                if not src:
-                    continue
-                # 相対URLを絶対URLに変換
-                src = urljoin(article_url, src)
-                # 除外パターンに一致するものはスキップ
-                src_lower = src.lower()
-                if any(pat in src_lower for pat in EXCLUDED_IMAGE_PATTERNS):
-                    continue
-                # 小さすぎる画像をスキップ（widthやheight属性で判定）
-                width = img.get("width", "")
-                height = img.get("height", "")
-                try:
-                    if width and int(width) < 100:
-                        continue
-                    if height and int(height) < 100:
-                        continue
-                except ValueError:
-                    pass
-                # 画像ファイル拡張子チェック
-                parsed = urlparse(src)
-                path_lower = parsed.path.lower()
-                if not any(path_lower.endswith(ext) for ext in [".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg"]):
-                    # 拡張子がなくてもOGPなどは通す（URLパラメータに画像情報がある場合）
-                    if "image" not in src_lower and "photo" not in src_lower and "img" not in src_lower:
-                        continue
-                if src not in images:
-                    images.append(src)
-                if len(images) >= max_images:
-                    break
-    except Exception as e:
-        logging.warning(f"画像抽出エラー ({article_url}): {e}")
-    logging.info(f"  → {article_url[:50]}... から {len(images)} 枚の画像を抽出")
-    return images
 def get_posted_titles_from_notion():
     logging.info("Notionから過去の投稿履歴を確認します...")
     if not NOTION_API_KEY or not NOTION_DATABASE_ID:
@@ -172,17 +93,6 @@ def fetch_rss_feeds(urls, exclude_titles, tag=""):
                     if (title in ex_title) or (ex_title in title):
                         is_excluded = True
                         break
-                # Try getting image from RSS
-                item_image = ""
-                if "media_content" in entry and len(entry.media_content) > 0:
-                    item_image = entry.media_content[0].get("url", "")
-                elif "media_thumbnail" in entry and len(entry.media_thumbnail) > 0:
-                    item_image = entry.media_thumbnail[0].get("url", "")
-                elif "links" in entry:
-                    for l in entry.links:
-                        if "image" in l.get("type", ""):
-                            item_image = l.get("href", "")
-                            break
                 if not is_excluded and link not in seen_urls:
                     seen_urls.add(link)
                     articles.append({
@@ -190,8 +100,7 @@ def fetch_rss_feeds(urls, exclude_titles, tag=""):
                         "link": link,
                         "published": getattr(entry, "published", getattr(entry, "updated", "")),
                         "summary": summary,
-                        "category": tag,
-                        "image_url": item_image
+                        "category": tag
                     })
         except Exception as e:
             logging.error(f"フィード取得エラー ({url}): {e}")
@@ -207,17 +116,21 @@ def generate_news_articles(news_articles, tips_articles, posted_titles):
     for idx, a in enumerate(tips_articles):
         tips_text += f"[Tips候補{idx+1}] タイトル: {a['title']}\nURL: {a['link']}\n概要: {a['summary']}\n\n"
     past_titles_str = "\n".join([f"- {t}" for t in list(posted_titles)[:100]])
-    system_instruction = f"""あなたはAIニュースの編集アシスタントです。
+    system_instruction = f"""あなたはNewsPicksの編集者です。
+ユーザーが入力したニュースの情報を、AIスクール受講生向けの「AIニュース」として再構成してください。
 【ターゲット読者の定義（ペルソナ）】
 以下のレベル感を「AI初心者・中級者」として明確に定義し、この読者が理解できる記事のみを選定・執筆すること。
 ・レベル感：日常や業務で少しAI（ChatGPT等）を触ったことがある、または興味はあるが使いこなせていない非エンジニア。
 ・知識量：プログラミング言語、API、パラメータチューニング、トークンなどの技術的な仕組みは全く知らない。
 ・知りたいこと：「どんな指示（プロンプト）を出せば仕事が楽になるか」「無料で使える便利なAIツールは何か」「他社はどうやってAIで業務効率化しているか」という実用的な情報。
+【過去の配信済み記事（重複除外用・最重要！）】
+以下のトピックは既に過去に配信済みです。これらと同じニュース、または非常に似た内容のニュースは「絶対に」選ばないでください。
+{past_titles_str}
 【目的】
-・受講生が実務活用を具体的にイメージできる内容にする
-・リテラシーが低い人でも一読で理解できる構成にする
-・難しい言葉は使わない
-・ニュースの事実（ファクト）は変更しない。ただし、読者の理解を助けるための「前提知識の補足」「用語解説」「カリキュラム（リスク管理等）との紐づけ」の追加は必須とする。
+・初心者や中級者が、すぐに自分の仕事や日常でAIを活用できると感じられる内容にする
+・中学生・高校生が読んでも完全に理解できるレベルの平易な日本語のみで記述する
+・難しい言葉や抽象度が高い表現は「絶対に」使用禁止とし、誰にでもわかる具体例を用いて解説する
+・ニュースの事実（ファクト）は変更しない。ただし、読者の理解を助けるための「前提知識の補足」「専門用語の解説」「カリキュラム（リスク管理等）との紐づけ」の追加は必須とする。
 【著作権に関する最重要ルール】
 ・元記事のタイトルや文章をそのままコピーして使うことは禁止。必ず自分の言葉で書き直すこと。
 ・元記事の見出しや本文の表現をそのまま流用せず、事実だけを抽出して独自の文章で再構成すること。
@@ -237,23 +150,25 @@ def generate_news_articles(news_articles, tips_articles, posted_titles):
 ・元記事に含まれる固有名詞（サービス名、企業名、数値）は正確に記載すること。
 【文章のルール】
 ・「概要」セクションの1文目では、いきなりニュースの本題に入らず「前提となる背景（例：〇〇というサービスがある等）」を補足すること。2文目以降で「何が起きたか」を明確に書くこと。
-・初心者がつまずきそうな専門用語が含まれる場合、概要の末尾に「※」を用いて簡潔な用語解説を必ず追加すること。
+・「LLM」「RAG」「プロンプト」などのAI用語やIT専門用語が登場した場合、必ず「※」を用いて中高生にもわかる簡潔な用語解説を追加すること。用語を解説せずにスルーすることは絶対に禁止。
 ・「詳しい解説」セクションでは、最初にどんな話なのかを書くこと。
 ・「詳しい解説」の中には、受講生にとっての具体的なメリット（例：「これまで〇〇ができなかった人でも、××できるようになる」等）を言語化して含めること。
 ・ニュースの内容に応じて、AI利用時のリスク（著作権、情報漏洩、ハルシネーションなど）に関する注意喚起を、独立したポイントとして必ず1つ盛り込むこと。その際、必要に応じて「モジュール１-セクション６『AIリテラシー・ガバナンス・リスク』」などのスクール学習内容と紐づけて解説すること。
-・主語を必ず明示し、省略しないこと
-・説明の重複は禁止（概要で書いたことを解説で繰り返さない）
-・抽象表現は禁止（具体的に何がどうなるかを書く）
-・1文の情報量は適切に保ち、短文の連続で分断しないこと
-・同じ語尾の反復を避け、文末表現に変化をつけること
-・同じ意味の言い換えは禁止し、用語は統一すること
+・主語を必ず明示し、省略しないこと。
+・説明の重複は禁止（概要で書いたことを解説で繰り返さない）。
+・抽象表現は一切禁止し、小学生でも情景が浮かぶレベルで具体的に何がどうなるかを書くこと。
+・1文の情報量は適切に保ち、短文の連続で分断しないこと。
+・同じ語尾の反復を避け、文末表現に変化をつけること。
+・同じ意味の言い換えは禁止し、用語は統一すること。
+・第3セクションのタイトル（「私たちの未来にどう関係する？」など）は固定せず、ニュースの内容や性質（新サービスの導入、技術の詳しい説明、社会動向など）に合わせて、読者が最も興味を持つような適切なタイトルをAIが柔軟に決定すること。
+・第3セクションのステップ数（具体的なアクションや未来への影響）は、ニュースの内容に応じてAIが最適な数を判断し、番号付きリストで記述すること。2つに限定せず、必要に応じて増減させること。
 【文体】
-・ニュース記事の文体を厳守すること
-・ですます調
-・読者が実務を想像できる具体性を持たせる
-・過度な感情表現は禁止（「驚きの」「衝撃の」「すごい」「ヤバい」等は使わない）
-・話し言葉は禁止（「〜ですね。」「〜ですよね。」「〜してみましょう！」「〜かもしれませんね。」等は使わない）
-・語尾は「〜です。」「〜ます。」「〜でしょう。」「〜ました。」「〜となります。」「〜が見込まれます。」「〜としています。」等のニュース調の表現を使うこと
+・ニュース記事の文体を厳守すること。
+・ですます調。
+・読者が実務を想像できる具体性を持たせる。
+・過度な感情表現は禁止（「驚きの」「衝撃の」「すごい」「ヤバい」等は使わない）。
+・話し言葉は禁止（「〜ですね。」「〜ですよね。」「〜してみましょう！」「〜かもしれませんね。」等は使わない）。
+・語尾は「〜です。」「〜ます。」「〜でしょう。」「〜ました。」「〜となります。」「〜が見込まれます。」「〜としています。」等のニュース調の表現を使うこと。
 【太字のルール（厳守）】
 ・Markdown内で ** を使った太字装飾は以下の3箇所のみに限定すること。
   1. 「一言でいうと：」のラベル部分
@@ -275,15 +190,14 @@ def generate_news_articles(news_articles, tips_articles, posted_titles):
 - **（ポイント3のタイトル：AI利用時のリスクや注意点など）**
   （著作権やリテラシー等の観点から注意すべき点を、スクールの学習内容と関連付けて解説）
 ---
-## ⚒️ 具体的な使い方
-1. **（ステップ1）**
-   （具体的なアクションを説明）
-2. **（ステップ2）**
-   （具体的なアクションを説明）
+## ⚒️ （記事の内容に合わせてAIが柔軟に決定するタイトル）
+（ニュースの内容に応じて、具体的なアクションや未来への影響を番号付きリストで記述。ステップ数はAIが最適な数を判断し、2つに限定せず増減させること）
 ---
 ## 🔗 リンク
 * 参考記事: [（元のニュース記事のタイトル）]（（元のニュース記事のURL））
-* スクール教材: モジュール１-セクション６「AIリテラシー・ガバナンス・リスク」（※言及した場合のみ追加）
+* スクール教材: モジュールXX-セクションXX「XXXXXX」（※言及した場合のみ追加）
+【画像に関する指示】
+・記事生成の際、画像はユーザー自身が選びたいという意向があるため、記事生成のみを行い、画像の選定や挿入は行わない。
 """
     prompt = f"""以下の2種類のリストから、ルールに従って合計10件選び、それぞれの解説をMarkdownで生成してください。
 【ニュース記事リスト（ここから7件選ぶこと）】
@@ -348,35 +262,11 @@ def parse_rich_text(text):
                 "text": {"content": part}
             })
     return rich_text
-def create_image_blocks(image_urls, source_url):
-    """画像URLリストから、引用元付きのNotionイメージブロックを作成する"""
-    blocks = []
-    for img_url in image_urls:
-        # 画像ブロック
-        blocks.append({
-            "object": "block",
-            "type": "image",
-            "image": {
-                "type": "external",
-                "external": {"url": img_url},
-                "caption": [
-                    {
-                        "type": "text",
-                        "text": {
-                            "content": f"（引用元：{source_url}）",
-                            "link": {"url": source_url}
-                        }
-                    }
-                ]
-            }
-        })
-    return blocks
-def create_notion_blocks(markdown_text, image_urls=None, source_url=""):
-    """MarkdownをNotionのブロック形式に変換し、画像も挿入する"""
+def create_notion_blocks(markdown_text):
+    """MarkdownをNotionのブロック形式に変換する"""
     blocks = []
     lines = markdown_text.split('\n')
     i = 0
-    images_inserted = False
     while i < len(lines):
         line = lines[i]
         stripped = line.strip()
@@ -386,11 +276,6 @@ def create_notion_blocks(markdown_text, image_urls=None, source_url=""):
         # --- 見出し2 ---
         if stripped.startswith('## '):
             heading_text = stripped[3:][:2000]
-            # 「詳しい解説」セクションの直前に画像を挿入する
-            if not images_inserted and image_urls and '詳しい解説' in heading_text:
-                img_blocks = create_image_blocks(image_urls, source_url)
-                blocks.extend(img_blocks)
-                images_inserted = True
             blocks.append({
                 "object": "block",
                 "type": "heading_2",
@@ -490,19 +375,8 @@ def create_notion_blocks(markdown_text, image_urls=None, source_url=""):
             "paragraph": {"rich_text": rich_text}
         })
         i = j
-    # 画像がまだ挿入されていない場合（「詳しい解説」がなかった場合のフォールバック）
-    if not images_inserted and image_urls:
-        img_blocks = create_image_blocks(image_urls, source_url)
-        # 概要の直後（最初のdividerの後）に挿入
-        insert_pos = 0
-        for idx, block in enumerate(blocks):
-            if block.get("type") == "divider":
-                insert_pos = idx + 1
-                break
-        for img_block in reversed(img_blocks):
-            blocks.insert(insert_pos, img_block)
     return blocks
-def create_notion_page(title, markdown_content, image_urls=None, source_url=""):
+def create_notion_page(title, markdown_content):
     if not NOTION_API_KEY or not NOTION_DATABASE_ID:
         return False
     url = "https://api.notion.com/v1/pages"
@@ -511,7 +385,7 @@ def create_notion_page(title, markdown_content, image_urls=None, source_url=""):
         "Content-Type": "application/json",
         "Notion-Version": "2022-06-28"
     }
-    blocks = create_notion_blocks(markdown_content, image_urls=image_urls, source_url=source_url)
+    blocks = create_notion_blocks(markdown_content)
     data = {
         "parent": {"database_id": NOTION_DATABASE_ID},
         "properties": {
@@ -540,33 +414,14 @@ def main():
         if not generated_articles:
             logging.error("記事の生成に失敗しました。")
             return
-        logging.info(f"{len(generated_articles)}件の記事が生成されました。画像抽出とNotion投稿を開始します。")
+        logging.info(f"{len(generated_articles)}件の記事が生成されました。Notion投稿を開始します。")
         for item in generated_articles:
             title = item.get("title", "無題")
             markdown_content = item.get("markdown", "")
-            article_url = item.get("url", "")
             if not markdown_content:
                 continue
-            # 元記事から画像を抽出
-            image_urls = []
-            if article_url:
-                logging.info(f"画像抽出中: {article_url[:60]}...")
-                
-                # RSSからすでに画像が取得できているか探す
-                rss_image = ""
-                for a in news_articles + tips_articles:
-                    if a['link'] == article_url and a.get('image_url'):
-                        rss_image = a['image_url']
-                        break
-                # スクレイピングで画像抽出を試みる
-                image_urls = extract_images_from_url(article_url, max_images=5)
-                
-                # スクレイピングで1枚も取れなかった場合、RSSの画像をフォールバックとして使う
-                if not image_urls and rss_image:
-                    logging.info(f"  → スクレイピング失敗のためRSSの画像を使用します: {rss_image}")
-                    image_urls.append(rss_image)
-            # Notionへ投稿（画像付き）
-            create_notion_page(title, markdown_content, image_urls=image_urls, source_url=article_url)
+            # Notionへ投稿（画像なし）
+            create_notion_page(title, markdown_content)
     except Exception as e:
         logging.error(f"実行中にエラーが発生しました: {e}")
         raise
